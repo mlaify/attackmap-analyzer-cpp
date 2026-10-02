@@ -48,6 +48,29 @@ CODE_SUFFIXES = {".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".ipp", ".tpp"}
 # out/, vendor/, node_modules/, .git/, ...). Matched against directory names
 # *inside* the repo only.
 SKIP_DIRS = DEFAULT_SKIP_DIRS | {"_deps", "third_party", "external", ".cache", "Debug", "Release"}
+
+# ---------- .h ownership (shared rule with attackmap-analyzer-c) ----------
+#
+# A ``.h`` header is either C or C++, and only one analyzer may claim it, or a
+# C++ project's headers (e.g. Drogon controllers, whose routes live in the
+# header) get analyzed as C and labelled language ``c``. The rule is decided
+# per repo and is mirrored *verbatim* in attackmap-analyzer-c, so both
+# plugins agree whichever of ``-m c`` / ``-m cpp`` is selected:
+#
+#   ``.h`` belongs to C++ if the repo has any C++ source/header (the suffixes
+#   below) or a CMakeLists.txt that enables CXX (``project(... CXX ...)``,
+#   ``enable_language(CXX)`` or ``CMAKE_CXX_STANDARD``); otherwise to C.
+#
+# Keep ``_CXX_MARKER_SUFFIXES`` and ``_CMAKE_CXX_PATTERN`` in sync with the C
+# plugin (which also ignores markers under this plugin's extra
+# ``Debug``/``Release`` skip dirs).
+_CXX_MARKER_SUFFIXES = CODE_SUFFIXES
+_CMAKE_CXX_PATTERN = re.compile(
+    r"\b(?i:project)\s*\([^)]*\bCXX\b"
+    r"|\b(?i:enable_language)\s*\(\s*CXX\b"
+    r"|\bCMAKE_CXX_STANDARD\b",
+)
+_HEADER_SUFFIX = ".h"
 _SNIPPET_MAX_CHARS = 160
 
 
@@ -75,10 +98,27 @@ DROGON_REGISTER_PATTERN = re.compile(
     re.DOTALL,
 )
 
-# Drogon annotation-style: METHOD_LIST_BEGIN ADD_METHOD_TO(controller::handler, "/path", Get) METHOD_LIST_END
+# Drogon HttpController: METHOD_LIST_BEGIN ... METHOD_LIST_END with
+#   ADD_METHOD_TO(Ctrl::handler, "/abs/path", Get, Post, "Filter")  - absolute path
+#   METHOD_ADD(Ctrl::handler, "/rel/{id}", Get)                      - relative to
+#     the controller's class path, /<namespace parts>/<ClassName>
+# and HttpSimpleController: PATH_ADD("/abs/path", Get, "Filter").
+# The trailing group is the rest of the argument list (methods and filters).
 DROGON_ADD_METHOD_PATTERN = re.compile(
-    r'\bADD_METHOD_TO\s*\(\s*[^,]+,\s*"([^"]+)"\s*,\s*([A-Za-z]+)',
+    r'\bADD_METHOD_TO\s*\(\s*[^,()]+,\s*"([^"]*)"\s*((?:,[^()]*)?)\)',
 )
+DROGON_METHOD_ADD_PATTERN = re.compile(
+    r'\bMETHOD_ADD\s*\(\s*(?:(?:::)?(\w+(?:::\w+)*)::)?\w+\s*,\s*"([^"]*)"\s*((?:,[^()]*)?)\)',
+)
+DROGON_PATH_ADD_PATTERN = re.compile(
+    r'\bPATH_ADD\s*\(\s*"([^"]*)"\s*((?:,[^()]*)?)\)',
+)
+_DROGON_METHOD_RE = re.compile(r'\b(?:drogon::)?(Get|Post|Put|Delete|Patch|Head|Options)\b')
+# class Foo : public drogon::HttpController<Foo>   (also final / HttpSimpleController)
+DROGON_CONTROLLER_PATTERN = re.compile(
+    r'\b(?:class|struct)\s+(\w+)\s*(?:final\s*)?:\s*public\s+(?:::)?(?:drogon::)?Http(?:Simple)?Controller\s*<',
+)
+_NAMESPACE_OR_BRACE_RE = re.compile(r'\bnamespace\s+((?:\w+::)*\w+)\s*\{|[{}]')
 
 # cpprestsdk: web::http::experimental::listener::http_listener listener("https://example.com/api");
 CPPRESTSDK_LISTENER_PATTERN = re.compile(
@@ -172,14 +212,53 @@ def _line_snippet(content: str, offset: int, *, max_chars: int = _SNIPPET_MAX_CH
     return line
 
 
-def _project_name_from_cmake(cmake_path: Path) -> str | None:
-    text = read_source(cmake_path)
-    if text is None:
-        return None
+def _project_name_from_cmake(text: str) -> str | None:
     match = re.search(r"\bproject\s*\(\s*([A-Za-z0-9_\-]+)", text)
     if match:
         return match.group(1)
     return None
+
+
+def _drogon_methods(args: str) -> list[str]:
+    """Sorted HTTP methods named in a Drogon macro's trailing arguments
+    (filter-name strings are ignored); ``["ANY"]`` when none constrain it."""
+    unquoted = re.sub(r'"[^"]*"', "", args)
+    methods = sorted({m.upper() for m in _DROGON_METHOD_RE.findall(unquoted)})
+    return methods or ["ANY"]
+
+
+def _namespaces_at(content: str, offset: int) -> list[str]:
+    """Namespace names enclosing ``offset`` (outermost first), from
+    ``namespace a { namespace b {`` or C++17 ``namespace a::b {``."""
+    stack: list[str | None] = []
+    for match in _NAMESPACE_OR_BRACE_RE.finditer(content, 0, offset):
+        if match.group(1):
+            stack.append(match.group(1))
+        elif match.group(0) == "{":
+            stack.append(None)
+        elif stack:
+            stack.pop()
+    parts: list[str] = []
+    for name in stack:
+        if name:
+            parts.extend(name.split("::"))
+    return parts
+
+
+def _drogon_controller_paths(content: str) -> dict[str, str]:
+    """Map each HttpController class name to its Drogon class path,
+    ``/<namespace parts>/<ClassName>`` (e.g. ``api::v1::User`` -> ``/api/v1/User``)."""
+    paths: dict[str, str] = {}
+    for match in DROGON_CONTROLLER_PATTERN.finditer(content):
+        name = match.group(1)
+        paths[name] = "/" + "/".join([*_namespaces_at(content, match.start()), name])
+    return paths
+
+
+def _join_drogon_path(prefix: str, path: str) -> str:
+    if not path:
+        return prefix
+    return prefix.rstrip("/") + (path if path.startswith("/") else "/" + path)
 
 
 class CppAnalyzer:
@@ -206,12 +285,23 @@ class CppAnalyzer:
         root = Path(repo_path).resolve()
         if not root.exists() or not root.is_dir():
             return False
+        # One walk. Any C++ source/header claims the repo; so do .h headers in
+        # a CMake project that enables CXX (header-only C++ with .h names).
         # Suffixes are matched case-sensitively, as before; the SDK match is
         # case-insensitive, so filter again.
-        for path in iter_repo_files(root, suffixes=CODE_SUFFIXES, skip_dirs=SKIP_DIRS):
+        has_header = False
+        cmake_cxx = False
+        for path in iter_repo_files(
+            root, suffixes=CODE_SUFFIXES | {_HEADER_SUFFIX}, names={"CMakeLists.txt"}, skip_dirs=SKIP_DIRS
+        ):
             if path.suffix in CODE_SUFFIXES:
                 return True
-        return False
+            if path.name == "CMakeLists.txt":
+                text = read_source(path)
+                cmake_cxx = cmake_cxx or (text is not None and _CMAKE_CXX_PATTERN.search(text) is not None)
+            elif path.suffix == _HEADER_SUFFIX:
+                has_header = True
+        return has_header and cmake_cxx
 
     def analyze(self, repo_path: str | Path) -> ScanResult:
         root = Path(repo_path).resolve()
@@ -219,16 +309,35 @@ class CppAnalyzer:
         if not root.exists() or not root.is_dir():
             return result
 
+        # One walk collects sources, headers and CMake files; .h headers are
+        # analyzed only when the repo is C++ (see the module-level rule).
+        candidates: list[Path] = []
+        cxx_repo = False
         for file_path in iter_repo_files(
-            root, suffixes=CODE_SUFFIXES, names={"CMakeLists.txt"}, skip_dirs=SKIP_DIRS
+            root,
+            suffixes=CODE_SUFFIXES | {_HEADER_SUFFIX},
+            names={"CMakeLists.txt"},
+            skip_dirs=SKIP_DIRS,
         ):
             if file_path.name == "CMakeLists.txt":
-                project = _project_name_from_cmake(file_path)
+                text = read_source(file_path)
+                if text is None:
+                    continue
+                project = _project_name_from_cmake(text)
                 if project:
                     self._append_unique_service(result, f"project:{project}", rel(file_path, root))
+                if _CMAKE_CXX_PATTERN.search(text):
+                    cxx_repo = True
                 continue
-            if file_path.suffix not in CODE_SUFFIXES:
-                continue
+            if file_path.suffix in _CXX_MARKER_SUFFIXES:
+                cxx_repo = True
+                candidates.append(file_path)
+            elif file_path.suffix == _HEADER_SUFFIX:
+                candidates.append(file_path)
+
+        for file_path in candidates:
+            if file_path.suffix == _HEADER_SUFFIX and not cxx_repo:
+                continue  # owned by the C analyzer
             content = read_source(file_path)
             if content is None:
                 continue
@@ -285,10 +394,39 @@ class CppAnalyzer:
             for method in sorted(methods):
                 self._append_unique_route(result, path, method, relative, line)
 
-        # Drogon ADD_METHOD_TO macro: ADD_METHOD_TO(ctrl::handler, "/path", Get)
+        # Drogon ADD_METHOD_TO(ctrl::handler, "/abs/path", Get, Post)
         for match in DROGON_ADD_METHOD_PATTERN.finditer(content):
-            path, method = match.group(1), match.group(2).upper()
-            self._append_unique_route(result, path, method, relative, line_of(content, match.start()))
+            line = line_of(content, match.start())
+            for method in _drogon_methods(match.group(2)):
+                self._append_unique_route(result, match.group(1) or "/", method, relative, line)
+
+        # Drogon METHOD_ADD(Ctrl::handler, "/rel", Get): path is relative to
+        # the controller's /namespace/ClassName path.
+        if "METHOD_ADD" in content:
+            controllers = _drogon_controller_paths(content)
+            for match in DROGON_METHOD_ADD_PATTERN.finditer(content):
+                qualifier = match.group(1) or ""
+                class_name = qualifier.split("::")[-1] if qualifier else ""
+                prefix = controllers.get(class_name)
+                if prefix is None:
+                    if len(controllers) == 1:
+                        prefix = next(iter(controllers.values()))
+                    elif qualifier:
+                        # Controller declared elsewhere; best effort from the
+                        # qualified handler name (ns::Class::fn).
+                        prefix = "/" + qualifier.replace("::", "/")
+                    else:
+                        continue
+                path = _join_drogon_path(prefix, match.group(2))
+                line = line_of(content, match.start())
+                for method in _drogon_methods(match.group(3)):
+                    self._append_unique_route(result, path, method, relative, line)
+
+        # Drogon HttpSimpleController PATH_ADD("/abs/path", Get)
+        for match in DROGON_PATH_ADD_PATTERN.finditer(content):
+            line = line_of(content, match.start())
+            for method in _drogon_methods(match.group(2)):
+                self._append_unique_route(result, match.group(1) or "/", method, relative, line)
 
         # cpprestsdk listener URL — the listener is constructed with the full URL
         # which we treat as both an entrypoint and a route (path part).

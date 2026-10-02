@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `.h` headers are analyzed when the repo is C++ (any C++ source/header or a C++-enabled `CMakeLists.txt`), by the ownership rule shared with attackmap-analyzer-c. `detect()` also claims header-only C++ repos (`.h` + C++ CMake) (mlaify/attackmap-analyzer-c#2).
+- Drogon `METHOD_ADD(Ctrl::fn, "/rel", Get)` routes, prefixed with the controller's `/namespace/Class` path, and `PATH_ADD("/path", ...)` for `HttpSimpleController` (mlaify/attackmap-analyzer-c#2).
+
 ### Changed
 
 - Walk and read the repo with the shared `attackmap.sdk` helpers (`iter_repo_files`, `read_source`, `rel`, `line_of`) instead of a local `rglob` + `SKIP_DIRS` walk (mlaify/AttackMap#253).
@@ -14,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Drogon `ADD_METHOD_TO` now emits every listed method (`Get, Post`) instead of only the first, ignores filter-name strings, and no longer turns `drogon::Post` into method `DROGON` (mlaify/attackmap-analyzer-c#2).
 - A repo checked out under a directory named like a skip dir (e.g. `/build/...`, `.../out/...`) was silently not analyzed, because skip dirs were matched against absolute path parts.
 - Symlinked files pointing outside the repo are no longer followed and analyzed.
 - cp1252/latin-1 encoded sources are analyzed instead of silently dropped, and an unreadable file no longer raises out of `analyze()`.
