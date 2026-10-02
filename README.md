@@ -27,21 +27,19 @@ All emissions populate AttackMap's Signal v2 fields (line numbers + evidence sni
 pip install git+https://github.com/mlaify/attackmap-analyzer-cpp.git
 ```
 
-The analyzer is auto-discovered by AttackMap via the `attackmap.analyzers` entry-point group.
+The analyzer is registered with AttackMap via the `attackmap.analyzers` entry-point group.
 
 ## Usage with AttackMap
 
-```bash
-# Auto-discovered when installed:
-attackmap analyze /path/to/cpp/repo
+This analyzer is **experimental and opt-in** (`enabled_by_default=False`): installing it does not make it run on every scan. Select it explicitly:
 
-# Or invoke explicitly:
-attackmap analyze /path/to/cpp/repo --module cpp
+```bash
+attackmap analyze /path/to/cpp/repo -m cpp
 ```
 
 ## Detection
 
-`detect()` returns true when any `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.ipp`, or `.tpp` file is present, ignoring `build/`, `.git/`, `_deps/`, `third_party/`, `vendor/`, `external/`, `.cache/`, `out/`, `Debug/`, `Release/`, and `node_modules/`.
+`detect()` returns true when any `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.ipp`, or `.tpp` file is present, ignoring `_deps/`, `third_party/`, `external/`, `.cache/`, `Debug/`, `Release/` and AttackMap's shared skip list (`build/`, `out/`, `vendor/`, `node_modules/`, `.git/`, ...). Skip directories are matched only *inside* the repo, so a checkout under e.g. `/build/...` is still scanned. Files are walked with `attackmap.sdk.iter_repo_files`, which does not follow symlinks out of the repo, and read with `read_source`, which falls back to cp1252/latin-1 for legacy-encoded sources.
 
 This analyzer **does not** claim `.h` files — those are handled by the C analyzer (`attackmap-analyzer-c`). A repo with only `.c` and `.h` files is not picked up here.
 
