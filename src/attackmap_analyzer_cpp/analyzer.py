@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from attackmap.sdk import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, read_source, rel
+
 from .contracts import (
     AnalyzerMetadata,
     AuthHint,
@@ -42,19 +44,10 @@ from .contracts import (
 )
 
 CODE_SUFFIXES = {".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".ipp", ".tpp"}
-SKIP_DIRS = {
-    "build",
-    ".git",
-    "_deps",
-    "third_party",
-    "vendor",
-    "external",
-    ".cache",
-    "out",
-    "node_modules",
-    "Debug",
-    "Release",
-}
+# C++-specific additions to the shared skip list (which already covers build/,
+# out/, vendor/, node_modules/, .git/, ...). Matched against directory names
+# *inside* the repo only.
+SKIP_DIRS = DEFAULT_SKIP_DIRS | {"_deps", "third_party", "external", ".cache", "Debug", "Release"}
 _SNIPPET_MAX_CHARS = 160
 
 
@@ -164,13 +157,11 @@ SECRET_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def _line_of(content: str, offset: int) -> int:
-    if offset <= 0:
-        return 1
-    return content.count("\n", 0, offset) + 1
-
-
 def _line_snippet(content: str, offset: int, *, max_chars: int = _SNIPPET_MAX_CHARS) -> str:
+    # Kept local rather than ``attackmap.sdk.line_snippet(content, line_of(...))``:
+    # the SDK helper indexes ``str.splitlines()``, which also breaks on form
+    # feeds and lone ``\r``, so its line numbering can disagree with
+    # ``line_of`` (which counts ``\n`` only).
     line_start = content.rfind("\n", 0, offset) + 1
     line_end = content.find("\n", offset)
     if line_end == -1:
@@ -182,11 +173,8 @@ def _line_snippet(content: str, offset: int, *, max_chars: int = _SNIPPET_MAX_CH
 
 
 def _project_name_from_cmake(cmake_path: Path) -> str | None:
-    if not cmake_path.exists():
-        return None
-    try:
-        text = cmake_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    text = read_source(cmake_path)
+    if text is None:
         return None
     match = re.search(r"\bproject\s*\(\s*([A-Za-z0-9_\-]+)", text)
     if match:
@@ -205,7 +193,7 @@ class CppAnalyzer:
         languages=["cpp"],
         priority=20,
         experimental=True,  # Like the C analyzer; regex coverage of C++ is more leaky than of stricter ecosystems.
-        enabled_by_default=True,
+        enabled_by_default=False,  # opt-in via `-m cpp` while experimental (AttackMap#221)
     )
 
     @property
@@ -218,11 +206,9 @@ class CppAnalyzer:
         root = Path(repo_path).resolve()
         if not root.exists() or not root.is_dir():
             return False
-        for path in root.rglob("*"):
-            if any(part in SKIP_DIRS for part in path.parts):
-                continue
-            if not path.is_file():
-                continue
+        # Suffixes are matched case-sensitively, as before; the SDK match is
+        # case-insensitive, so filter again.
+        for path in iter_repo_files(root, suffixes=CODE_SUFFIXES, skip_dirs=SKIP_DIRS):
             if path.suffix in CODE_SUFFIXES:
                 return True
         return False
@@ -233,31 +219,25 @@ class CppAnalyzer:
         if not root.exists() or not root.is_dir():
             return result
 
-        for cmake in root.rglob("CMakeLists.txt"):
-            if any(part in SKIP_DIRS for part in cmake.parts):
-                continue
-            project = _project_name_from_cmake(cmake)
-            if project:
-                self._append_unique_service(result, f"project:{project}", str(cmake.relative_to(root)))
-
-        for file_path in root.rglob("*"):
-            if not file_path.is_file():
-                continue
-            if any(part in SKIP_DIRS for part in file_path.parts):
+        for file_path in iter_repo_files(
+            root, suffixes=CODE_SUFFIXES, names={"CMakeLists.txt"}, skip_dirs=SKIP_DIRS
+        ):
+            if file_path.name == "CMakeLists.txt":
+                project = _project_name_from_cmake(file_path)
+                if project:
+                    self._append_unique_service(result, f"project:{project}", rel(file_path, root))
                 continue
             if file_path.suffix not in CODE_SUFFIXES:
+                continue
+            content = read_source(file_path)
+            if content is None:
                 continue
 
             result.files_scanned += 1
             if "cpp" not in result.languages:
                 result.languages.append("cpp")
 
-            try:
-                content = file_path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-
-            relative = str(file_path.relative_to(root))
+            relative = rel(file_path, root)
             self._extract_routes(content, relative, result)
             self._extract_databases(content, relative, result)
             self._extract_auth(content, relative, result)
@@ -276,7 +256,7 @@ class CppAnalyzer:
         for match in CROW_ROUTE_PATTERN.finditer(content):
             path = match.group(1)
             chain = match.group("chain") or ""
-            line = _line_of(content, match.start())
+            line = line_of(content, match.start())
             methods: set[str] = set()
             methods_match = CROW_METHODS_PATTERN.search(chain)
             if methods_match:
@@ -289,7 +269,7 @@ class CppAnalyzer:
         # Pistache: Routes::Get(router, "/x", handler)
         for match in PISTACHE_ROUTE_PATTERN.finditer(content):
             method, path = match.group(1).upper(), match.group(2)
-            self._append_unique_route(result, path, method, relative, _line_of(content, match.start()))
+            self._append_unique_route(result, path, method, relative, line_of(content, match.start()))
 
         # Drogon registerHandler with explicit method list: {Drogon::Get, Drogon::Post}
         for match in DROGON_REGISTER_PATTERN.finditer(content):
@@ -299,7 +279,7 @@ class CppAnalyzer:
                 m.upper()
                 for m in re.findall(r'\b(?:Drogon::)?(Get|Post|Put|Delete|Patch|Head|Options)\b', methods_blob)
             }
-            line = _line_of(content, match.start())
+            line = line_of(content, match.start())
             if not methods:
                 methods = {"ANY"}
             for method in sorted(methods):
@@ -308,7 +288,7 @@ class CppAnalyzer:
         # Drogon ADD_METHOD_TO macro: ADD_METHOD_TO(ctrl::handler, "/path", Get)
         for match in DROGON_ADD_METHOD_PATTERN.finditer(content):
             path, method = match.group(1), match.group(2).upper()
-            self._append_unique_route(result, path, method, relative, _line_of(content, match.start()))
+            self._append_unique_route(result, path, method, relative, line_of(content, match.start()))
 
         # cpprestsdk listener URL — the listener is constructed with the full URL
         # which we treat as both an entrypoint and a route (path part).
@@ -318,7 +298,7 @@ class CppAnalyzer:
             path_match = re.search(r"https?://[^/]+(/[^?]*)", url)
             if path_match:
                 path = path_match.group(1) or "/"
-                self._append_unique_route(result, path, "ANY", relative, _line_of(content, match.start()))
+                self._append_unique_route(result, path, "ANY", relative, line_of(content, match.start()))
 
     def _extract_databases(self, content: str, relative: str, result: ScanResult) -> None:
         for pattern, kind in DB_PATTERNS:
@@ -327,7 +307,7 @@ class CppAnalyzer:
                 continue
             self._append_unique_database(
                 result, kind, relative,
-                _line_of(content, match.start()),
+                line_of(content, match.start()),
                 _line_snippet(content, match.start()),
             )
 
@@ -338,7 +318,7 @@ class CppAnalyzer:
                 continue
             self._append_unique_auth(
                 result, hint, relative,
-                _line_of(content, match.start()),
+                line_of(content, match.start()),
                 _line_snippet(content, match.start()),
                 confidence,
             )
@@ -349,7 +329,7 @@ class CppAnalyzer:
                 name = match.group(1)
                 self._append_unique_secret(
                     result, name, relative,
-                    _line_of(content, match.start()),
+                    line_of(content, match.start()),
                     _line_snippet(content, match.start()),
                 )
 
@@ -361,7 +341,7 @@ class CppAnalyzer:
                     continue
                 self._append_unique_external(
                     result, target, relative,
-                    _line_of(content, match.start()),
+                    line_of(content, match.start()),
                     _line_snippet(content, match.start()),
                 )
 
@@ -372,7 +352,7 @@ class CppAnalyzer:
                 continue
             self._append_unique_framework(
                 result, name, relative,
-                _line_of(content, match.start()),
+                line_of(content, match.start()),
                 _line_snippet(content, match.start()),
             )
 
@@ -383,7 +363,7 @@ class CppAnalyzer:
                 continue
             self._append_unique_entrypoint(
                 result, hint, relative,
-                _line_of(content, match.start()),
+                line_of(content, match.start()),
                 _line_snippet(content, match.start()),
             )
 
