@@ -516,3 +516,198 @@ def test_cp1252_source_is_analyzed(tmp_path: Path) -> None:
 def test_experimental_analyzer_is_opt_in() -> None:
     assert CppAnalyzer.metadata.experimental is True
     assert CppAnalyzer.metadata.enabled_by_default is False
+
+
+# ---------- mlaify/attackmap-analyzer-c#2: .h ownership, Drogon METHOD_ADD / PATH_ADD ----------
+
+_DROGON_CONTROLLER_H = """#pragma once
+
+#include <drogon/HttpController.h>
+
+using namespace drogon;
+
+namespace api
+{
+namespace v1
+{
+class User : public drogon::HttpController<User>
+{
+  public:
+    METHOD_LIST_BEGIN
+    METHOD_ADD(User::getInfo, "/{id}", Get);
+    ADD_METHOD_TO(User::login, "/api/v1/login", Post);
+    METHOD_LIST_END
+};
+}  // namespace v1
+}  // namespace api
+"""
+
+
+def _write_tree(root: Path, files: dict[str, str]) -> None:
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def _routes(result) -> set[tuple[str, str, str]]:
+    return {(r.method, r.path, r.file) for r in result.routes}
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"controllers/api_v1_User.cc": '#include "api_v1_User.h"\n'},
+        {"CMakeLists.txt": "project(app CXX)\n"},
+    ],
+    ids=["with-cc-source", "header-only-cmake-cxx"],
+)
+def test_drogon_header_controller_yields_both_routes(tmp_path: Path, extra: dict[str, str]) -> None:
+    _write_tree(tmp_path, {"controllers/api_v1_User.h": _DROGON_CONTROLLER_H, **extra})
+    analyzer = CppAnalyzer()
+    assert analyzer.detect(tmp_path) is True
+    result = analyzer.analyze(tmp_path)
+    assert _routes(result) == {
+        ("GET", "/api/v1/User/{id}", "controllers/api_v1_User.h"),
+        ("POST", "/api/v1/login", "controllers/api_v1_User.h"),
+    }
+    assert result.languages == ["cpp"]
+    assert any(f.hint == "drogon" and f.file == "controllers/api_v1_User.h" for f in result.framework_hints)
+
+
+def test_detect_does_not_claim_bridging_header_or_pure_c_headers(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "App/App-Bridging-Header.h": '#import "MyLib.h"\n',
+            "App/AppDelegate.swift": "import UIKit\n",
+            "lib/CMakeLists.txt": "project(lib C)\n",
+            "lib/util.h": "int util(void);\n",
+        },
+    )
+    assert CppAnalyzer().detect(tmp_path) is False
+
+
+def test_drogon_method_add_variants(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "Items.h": (
+                "#include <drogon/HttpController.h>\n"
+                "namespace shop::v2 {\n"
+                "class Items final : public drogon::HttpController<Items> {\n"
+                "  public:\n"
+                "    METHOD_LIST_BEGIN\n"
+                '    METHOD_ADD(Items::list, "", Get);\n'
+                '    METHOD_ADD(Items::update, "/{id}", Put, Patch, "AuthFilter");\n'
+                '    METHOD_ADD(Items::any, "/any/{1}");\n'
+                '    ADD_METHOD_TO(Items::bulk, "/bulk", drogon::Post, drogon::Options);\n'
+                "    METHOD_LIST_END\n"
+                "};\n"
+                "}\n"
+            ),
+            "Health.h": (
+                "#include <drogon/HttpController.h>\n"
+                "class Health : public drogon::HttpController<Health> {\n"
+                "    METHOD_LIST_BEGIN\n"
+                '    METHOD_ADD(Health::ping, "/ping", Get);\n'
+                "    METHOD_LIST_END\n"
+                "};\n"
+            ),
+            "Root.h": (
+                "#include <drogon/HttpSimpleController.h>\n"
+                "class Root : public drogon::HttpSimpleController<Root> {\n"
+                "  public:\n"
+                "    PATH_LIST_BEGIN\n"
+                '    PATH_ADD("/", Get, Post);\n'
+                '    PATH_ADD("/status", "LoginFilter");\n'
+                "    PATH_LIST_END\n"
+                "};\n"
+            ),
+            "main.cc": "int main() {}\n",
+        },
+    )
+    assert _routes(CppAnalyzer().analyze(tmp_path)) == {
+        ("GET", "/shop/v2/Items", "Items.h"),
+        ("PUT", "/shop/v2/Items/{id}", "Items.h"),
+        ("PATCH", "/shop/v2/Items/{id}", "Items.h"),
+        ("ANY", "/shop/v2/Items/any/{1}", "Items.h"),
+        ("POST", "/bulk", "Items.h"),
+        ("OPTIONS", "/bulk", "Items.h"),
+        ("GET", "/Health/ping", "Health.h"),
+        ("GET", "/", "Root.h"),
+        ("POST", "/", "Root.h"),
+        ("ANY", "/status", "Root.h"),
+    }
+
+
+def test_detect_performs_a_single_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    files: dict[str, str] = {}
+    for i in range(20):
+        files[f"mod{i}/CMakeLists.txt"] = f"project(mod{i} C)\n"
+        files[f"mod{i}/Makefile"] = "all:\n"
+        files[f"mod{i}/inc/x{i}.h"] = "int x(void);\n"
+    _write_tree(tmp_path, files)
+
+    walks: list[object] = []
+    real_walk = os.walk
+
+    def counting_walk(*args, **kwargs):
+        walks.append(args[0] if args else kwargs.get("top"))
+        return real_walk(*args, **kwargs)
+
+    rglobs: list[str] = []
+    real_rglob = Path.rglob
+
+    def counting_rglob(self, pattern, *args, **kwargs):
+        rglobs.append(pattern)
+        return real_rglob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(os, "walk", counting_walk)
+    monkeypatch.setattr(Path, "rglob", counting_rglob)
+
+    assert CppAnalyzer().detect(tmp_path) is False
+    assert len(walks) == 1
+    assert rglobs == []
+
+
+# The .h ownership rule, mirrored case-for-case in attackmap-analyzer-c's
+# tests: (files besides a.c + inc/api.h, owner of inc/api.h).
+_OWNERSHIP_CASES = [
+    ({}, "c"),
+    ({"CMakeLists.txt": "project(lib C)\n"}, "c"),
+    ({"CMakeLists.txt": "project(lib)\n"}, "c"),
+    ({"CMakeLists.txt": "cmake_minimum_required(VERSION 3.10)\nproject(lib VERSION 1.0 LANGUAGES CXX)\n"}, "cpp"),
+    ({"CMakeLists.txt": "PROJECT(lib C CXX)\n"}, "cpp"),
+    ({"CMakeLists.txt": "project(lib C)\nenable_language(CXX)\n"}, "cpp"),
+    ({"CMakeLists.txt": "project(lib C)\nset(CMAKE_CXX_STANDARD 17)\n"}, "cpp"),
+    ({"sub/CMakeLists.txt": "project(sub CXX)\n"}, "cpp"),
+    ({"src/server.cpp": "int main() {}\n"}, "cpp"),
+    ({"src/server.cc": "int main() {}\n"}, "cpp"),
+    ({"src/server.cxx": "int main() {}\n"}, "cpp"),
+    ({"inc/util.hpp": "#pragma once\n"}, "cpp"),
+    # Pruned by one of the two plugins: never a marker for either.
+    ({"build/gen.cpp": "int g() {}\n"}, "c"),
+    ({"third_party/lib/x.cc": "int x() {}\n"}, "c"),
+    ({"Release/gen.cpp": "int g() {}\n"}, "c"),
+    ({"Debug/CMakeLists.txt": "project(dbg CXX)\n"}, "c"),
+]
+
+
+@pytest.mark.parametrize(("extra", "owner"), _OWNERSHIP_CASES)
+def test_header_ownership_rule(tmp_path: Path, extra: dict[str, str], owner: str) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "a.c": '#include "inc/api.h"\nint main(void) { return 0; }\n',
+            "inc/api.h": '#pragma once\nstatic const char *k(void) { return getenv("API_TOKEN"); }\n',
+            **extra,
+        },
+    )
+    analyzer = CppAnalyzer()
+    result = analyzer.analyze(tmp_path)
+    scanned_header = any(s.file == "inc/api.h" and s.name == "API_TOKEN" for s in result.secret_hints)
+    assert scanned_header is (owner == "cpp")
+    assert analyzer.detect(tmp_path) is (owner == "cpp")
