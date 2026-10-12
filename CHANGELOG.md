@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Native dependency inventory (mlaify/AttackMap#191).** A new `native_deps.py`, shared verbatim with attackmap-analyzer-c, emits `DependencyHint`s from:
+  - `vcpkg.json`: dependencies, `version>=`, `overrides`, `host`, `builtin-baseline`;
+  - Conan: `conanfile.txt`, `conanfile.py` (read as text, never executed) and `conan.lock`;
+  - CMake: `FetchContent_Declare`, `ExternalProject_Add`, `CPMAddPackage` and `find_package`.
+
+  `--cve` now reaches Conan and vcpkg dependencies. CMake ones are inventory-only. Git downloads on a branch or with no `GIT_TAG`, and archive URLs without `URL_HASH`, are reported as `mutable_vcs_dependency` supply-chain issues. Requires an AttackMap core with the `cmake` ecosystem and `SupplyChainIssue` in `attackmap.sdk` (mlaify/AttackMap#333).
+
+### Added
+
 - `.h` headers are analyzed when the repo is C++ (any C++ source/header or a C++-enabled `CMakeLists.txt`), by the ownership rule shared with attackmap-analyzer-c. `detect()` also claims header-only C++ repos (`.h` + C++ CMake) (mlaify/attackmap-analyzer-c#2).
 - Drogon `METHOD_ADD(Ctrl::fn, "/rel", Get)` routes, prefixed with the controller's `/namespace/Class` path, and `PATH_ADD("/path", ...)` for `HttpSimpleController` (mlaify/attackmap-analyzer-c#2).
 

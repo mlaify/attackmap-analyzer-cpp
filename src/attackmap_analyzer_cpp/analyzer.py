@@ -15,6 +15,8 @@ Coverage (v0.1):
   jwt::verify)
 - Secrets: getenv / std::getenv with secret-shaped names
 - Service hints: project name from CMakeLists.txt project() declaration
+- Dependencies (AttackMap#191): CMake FetchContent / ExternalProject / CPM /
+  find_package, Conan and vcpkg manifests (see ``native_deps``)
 
 C++ shares much of its data-plane vocabulary with C (libcurl, OpenSSL,
 libsodium) — those patterns are duplicated here so a pure-C++ project
@@ -30,6 +32,7 @@ from pathlib import Path
 
 from attackmap.sdk import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, read_source, rel
 
+from .native_deps import native_dependencies
 from .contracts import (
     AnalyzerMetadata,
     AuthHint,
@@ -354,6 +357,12 @@ class CppAnalyzer:
             self._extract_external_calls(content, relative, result)
             self._extract_frameworks(content, relative, result)
             self._extract_entrypoints(content, relative, result)
+
+        # CMake / Conan / vcpkg dependencies and unpinned CMake downloads
+        # (AttackMap#191).
+        dependencies, supply_chain = native_dependencies(root, SKIP_DIRS)
+        result.dependencies.extend(dependencies)
+        result.supply_chain_issues.extend(supply_chain)
 
         result.languages.sort()
         return result

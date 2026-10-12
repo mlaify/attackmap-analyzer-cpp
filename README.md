@@ -18,6 +18,7 @@ This analyzer extracts structured signals from C++ source trees (`.cpp`, `.cc`, 
 - **Auth/crypto** — OpenSSL (TLS / EVP / RAND), Botan (`TLS::Server`, `Cipher_Mode`, `PKCS5_PBKDF2`, `Scrypt`), libsodium (`crypto_pwhash` → argon2, `crypto_secretbox`, AEAD primitives), Crypto++ (`CryptoPP::AES`, `CryptoPP::SHA256`, `CryptoPP::Argon2`, `CryptoPP::HMAC`), JWT C++ libraries (`jwt::create`, `jwt::decode`, `jwt::verify`)
 - **Secrets** — `std::getenv`, `getenv` with secret-shaped names
 - **Service hints** — project name from `CMakeLists.txt` `project(NAME ...)` declaration
+- **Dependencies (SBOM)** — vcpkg (`vcpkg.json`), Conan (`conanfile.txt`, `conanfile.py`, `conan.lock`) and CMake (`FetchContent_Declare`, `ExternalProject_Add`, `CPMAddPackage`, `find_package`), so `--cve` reaches native dependencies; unpinned CMake downloads are reported as supply-chain issues (see [Dependencies](#dependencies))
 
 All emissions populate AttackMap's Signal v2 fields (line numbers + evidence snippets + confidence) so downstream insights can cite `path/to/file.cpp:NN`.
 
@@ -52,6 +53,32 @@ attackmap analyze /path/to/cpp/repo -m cpp
 In a mixed repo, `.c` files go to C, and `.cpp`/`.hpp`/... plus `.h` go to C++. Running only one of the two analyzers on a mixed repo leaves the other's files unanalyzed. It never double-counts them.
 
 A repo with only `.c` and `.h` files (and no C++ CMake) is not picked up here.
+
+## Dependencies
+
+`native_deps.py` emits `DependencyHint`s (mlaify/AttackMap#191). The module is shared verbatim with attackmap-analyzer-c. Core dedupes identical records when both analyzers run.
+
+| Source | Ecosystem | Version | `dev` |
+|---|---|---|---|
+| `vcpkg.json` `dependencies` | `vcpkg` | `overrides` pin (`resolved=True`), else `>=` from `version>=`, else empty (the `builtin-baseline` decides; it's recorded in the evidence) | `"host": true` |
+| `conanfile.txt` `[requires]` / `[tool_requires]` / `[build_requires]` / `[test_requires]` | `conan` | as written (`1.2.13`, `[>=1.80 <2.0]`) | tool/build/test sections |
+| `conanfile.py` `requires = ...`, `self.requires("x/1.0")` and the tool/build/test forms (read as text, never executed) | `conan` | as written | tool/build/test |
+| `conan.lock` | `conan` | exact (`resolved=True`) | `build_requires` |
+| CMake `FetchContent_Declare` / `ExternalProject_Add` / `CPMAddPackage` | `cmake` | `GIT_TAG`, a CPM version, or a version in the archive URL | test/example manifests, test frameworks |
+| CMake `find_package(Name [version] [EXACT])` | `cmake` | `>=version` / `==version` | test/example manifests, test frameworks |
+
+`cmake` is inventory-only in core: it has no OSV database, so `--cve` reports those dependencies as not CVE-checked. `conan` and `vcpkg` map to OSV ConanCenter and vcpkg. Build tools and CMake modules (`Threads`, `PkgConfig`, `Python3`, `Git`...) aren't dependencies.
+
+**Unpinned downloads** are `SupplyChainIssue(kind="mutable_vcs_dependency")` records:
+
+| Download | Severity |
+|---|---|
+| git download with no `GIT_TAG`, or a `GIT_TAG` that names a branch (`main`, `master`, `develop`...) | medium |
+| any other tag or a short SHA | low |
+| a full 40-hex commit SHA | not flagged |
+| `URL` download without `URL_HASH`/`URL_MD5` | medium |
+
+Values that are CMake variables (`${X}`) are never flagged.
 
 ## Coverage notes
 

@@ -22,6 +22,7 @@ C++ ecosystem coverage:
 - **Databases**: libpqxx, MySQL X DevAPI, mongocxx, redis-plus-plus, SOCI, sqlite_orm
 - **Auth/crypto**: OpenSSL (TLS / EVP / RAND), Botan (TLS / KDF / cipher), libsodium (`crypto_pwhash` → argon2; AEAD), Crypto++ (AES / SHA / Argon2 / HMAC), JWT C++ libs (`jwt::create`, `jwt::decode`)
 - **Secrets**: `std::getenv` / `getenv` with secret-shaped names
+- **Dependencies** (`native_deps.py`, mirrored verbatim in attackmap-analyzer-c): vcpkg, Conan and CMake manifests → `DependencyHint` (`vcpkg`/`conan`/`cmake`), unpinned CMake downloads → `SupplyChainIssue` `mutable_vcs_dependency` (AttackMap#191). Manifests are parsed as text; `conanfile.py` is never executed.
 
 ## Out of scope (for now)
 - Boost.Beast / Asio raw HTTP server detection — too low-level; would need flow analysis.
