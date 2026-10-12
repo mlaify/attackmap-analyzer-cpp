@@ -69,19 +69,19 @@ The analyzer emits function-local C/C++ weaknesses as `CodeWeakness` records (ml
 
 | Kind (rule id) | Fires on | Not reported |
 |---|---|---|
-| `unbounded_copy` (CWE-120) | `gets`; `scanf`/`fscanf` `%s`/`%[` without a width; `strcpy`/`strcat`/`sprintf` `%s` whose source is traced to an input | a literal or untraced source; a source checked with `strlen(s) < ...` or a length alias first; a sized destination (`malloc(strlen(s) + 1)`); `%.Ns`; a bounded read (`fgets`, `recv`, `%255s`) copied into an array at least as large |
+| `unbounded_copy` (CWE-120) | `gets`; `scanf`/`fscanf` `%s`/`%[` without a width; `strcpy`/`strcat`/`sprintf` `%s` whose source is traced to an input | a literal or untraced source; a source with an upper-bound check first (`strlen(s) < sizeof dst`, directly or through a length alias; `> 0` / `< 0` checks don't count); a sized destination (`malloc(strlen(s) + 1)`); `%.Ns`; a bounded read (`fgets`, `recv`, `%255s`) copied into an array at least as large |
 | `format_string` (CWE-134) | a printf-family format (`printf`, `fprintf`, `sprintf`, `snprintf`, `syslog`, civetweb/mongoose `mg_printf`, `mg_http_reply`) that is not a constant | literals, `#define` and `static const` strings, literal ternaries, gettext `_()`, variadic and `va_list` wrappers forwarding their own `fmt`, untraced function results |
 | `native_command_exec` (CWE-78) | `system`/`popen` with a non-constant command; `exec*` with an input-derived argument or a non-constant `sh -c` line | constant commands, `NULL`, an untraced `execv(path, args)` without a shell |
-| `tainted_copy_length` (CWE-805) | `memcpy`/`memmove`/`strncpy`/`strncat` length traced to an input | lengths compared or clamped (`MIN`, `assert`) first, a destination allocated from the same length, a byte count returned by `recv`/`read` |
-| `alloc_size_overflow` (CWE-680) | `malloc`/`realloc`/`alloca`/`new T[]` of a product with an input-derived factor | `calloc`, sums, untraced factors, a factor checked first or a `SIZE_MAX`/`__builtin_mul_overflow` guard |
+| `tainted_copy_length` (CWE-805) | `memcpy`/`memmove`/`strncpy`/`strncat` length traced to an input | lengths with an upper-bound check (`n > sizeof dst`, `ck_assert_int_lt(n, cap)`) or a clamp (`MIN`, `n > cap ? cap : n`, also inside the call) first, a destination allocated from the same length, a byte count returned by `recv`/`read` |
+| `alloc_size_overflow` (CWE-680) | `malloc`/`realloc`/`alloca`/`new T[]` of a product with an input-derived factor | `calloc`, sums, untraced factors, a factor with an upper-bound check first or a `SIZE_MAX`/`__builtin_mul_overflow` guard |
 
 **Sources**, traced per function through assignments, out-parameters and copy functions:
 
-- **Request input:** parameters of a framework request type (cpp-httplib `Request`, Crow `crow::request`, Drogon `HttpRequestPtr`, Pistache `Rest::Request`, Boost.Beast `http::request<...>`, restbed `shared_ptr<Session>`/`shared_ptr<const Request>`); oat++ `ENDPOINT` `QUERY`/`PATH`/`HEADER`/`BODY_*` parameters; accessors such as `get_param_value`, `url_params`, `->getParameter`, `->get_path_parameter`; and the C framework sources (civetweb, mongoose, libmicrohttpd).
+- **Request input:** parameters of a framework request type (bare names such as `Request`, `Rest::Request`, `request<...>`, `shared_ptr<Session>` count only in a file that uses that framework; `struct Request` never does) (cpp-httplib `Request`, Crow `crow::request`, Drogon `HttpRequestPtr`, Pistache `Rest::Request`, Boost.Beast `http::request<...>`, restbed `shared_ptr<Session>`/`shared_ptr<const Request>`); oat++ `ENDPOINT` `QUERY`/`PATH`/`HEADER`/`BODY_*` parameters; accessors such as `get_param_value` and `url_params` (other getters count only on a request-typed variable); and the C framework sources (civetweb, mongoose, libmicrohttpd).
 - **Network input:** `recv`/`recvfrom`/`SSL_read`/`BIO_read`/`mbedtls_ssl_read`, and `read` on a socket-named descriptor.
 - **Local input:** stdin (`fgets(..., stdin)`, `scanf`, `std::cin >>`, `std::getline(std::cin, ...)`), `argv`/`optarg` in a function that takes `argv`, `getenv`, and file reads.
 
-Taint doesn't flow through calls to unknown functions (`gethostbyname(argv[1])`).
+Taint doesn't flow through calls to unknown functions (`gethostbyname(argv[1])`). A reassignment to a literal (`u = "default"`) clears it. A copy between two declared arrays where the destination is at least as large isn't reported.
 
 **Severity and confidence:**
 

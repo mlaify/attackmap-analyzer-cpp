@@ -35,6 +35,7 @@ def test_cpp_httplib_handler_lambda() -> None:
 
 def test_crow_drogon_pistache_beast_restbed_requests() -> None:
     code = (
+        "#include <pistache/endpoint.h>\n#include <boost/beast/http.hpp>\n#include <restbed>\n"
         'void crow_handler(const crow::request& req) {\n    char b[16];\n    strcpy(b, req.url_params.get("q"));\n}\n'
         "void drogon_handler(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> &&cb) {\n"
         '    auto name = req->getParameter("name");\n    printf(name.c_str());\n}\n'
@@ -46,11 +47,11 @@ def test_crow_drogon_pistache_beast_restbed_requests() -> None:
         '    const auto id = session->get_request()->get_path_parameter("id");\n    syslog(LOG_INFO, id.data());\n}\n'
     )
     assert _hits(code) == [
-        (3, "unbounded_copy", "high", "request"),
-        (7, "format_string", "high", "request"),
-        (11, "native_command_exec", "high", "request"),
-        (15, "native_command_exec", "high", "request"),
-        (19, "format_string", "high", "request"),
+        (6, "unbounded_copy", "high", "request"),
+        (10, "format_string", "high", "request"),
+        (14, "native_command_exec", "high", "request"),
+        (18, "native_command_exec", "high", "request"),
+        (22, "format_string", "high", "request"),
     ]
 
 
@@ -89,3 +90,34 @@ def test_std_cin_and_new_array() -> None:
 )
 def test_cpp_negatives(code: str) -> None:
     assert _hits(code) == []
+
+
+def test_cpp_non_bounding_and_sizing_idioms() -> None:
+    code = (
+        "void h(const httplib::Request &req) {\n"
+        "    char buf[64];\n"
+        "    int n = static_cast<int>(req.body.size());\n"
+        "    std::vector<char> tmp(n);\n"
+        "    memcpy(buf, req.body.data(), n);\n}\n"
+    )
+    assert _hits(code) == [(5, "tainted_copy_length", "high", "request")]
+
+
+def test_constants_followed_through_c_str() -> None:
+    code = 'void f() {\n    std::string cmd = "uptime";\n    std::system(cmd.c_str());\n    printf(cmd.c_str());\n}\n'
+    assert _hits(code) == []
+
+
+def test_arrow_getters_need_a_framework_request_receiver() -> None:
+    code = (
+        "void f(Config *cfg, Message *msg) {\n    char b[8];\n"
+        '    strcpy(b, cfg->getPath().c_str());\n    system(msg->getBody().c_str());\n}\n'
+        "void g(const HttpRequestPtr &req) {\n    system(req->getParameter(\"x\").c_str());\n}\n"
+    )
+    assert _hits(code) == [(4, "native_command_exec", "low", None), (7, "native_command_exec", "high", "request")]
+
+
+def test_bare_request_type_needs_its_framework() -> None:
+    code = "void h(const Request &req) {\n    system(req.body.c_str());\n}\n"
+    assert _hits(code) == [(2, "native_command_exec", "low", None)]
+    assert _hits("#include <httplib.h>\n" + code) == [(3, "native_command_exec", "high", "request")]
