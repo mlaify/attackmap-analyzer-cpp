@@ -3,7 +3,9 @@
 Coverage (v0.1):
 - Web frameworks: Crow (CROW_ROUTE macro routes), Pistache (Routes::Get/Post/...),
   Drogon (registerHandler + ADD_METHOD_TO macro), cpprestsdk (http_listener URL +
-  listener.support method handlers)
+  listener.support method handlers), cpp-httplib (svr.Get/Post/...), oat++
+  (ENDPOINT + AUTHORIZATION), restbed (set_path + set_method_handler); see
+  ``framework_routes``
 - HTTP clients (external calls): libcurl (CURLOPT_URL), cpprestsdk
   http_client(URL), cpr (cpr::Get/Post/Put/Delete with cpr::Url{...})
 - Databases: libpqxx (pqxx::connection), MySQL X DevAPI (mysqlx::Session),
@@ -30,6 +32,7 @@ from pathlib import Path
 
 from attackmap.sdk import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, read_source, rel
 
+from .framework_routes import framework_routes
 from .contracts import (
     AnalyzerMetadata,
     AuthHint,
@@ -170,6 +173,8 @@ FRAMEWORK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r'\bboost::beast\b|#\s*include\s+["<]boost/beast'), "boost-beast"),
     (re.compile(r'\bPoco::Net::HTTPServer\b|#\s*include\s+["<]Poco/Net/'), "poco-net"),
     (re.compile(r'\boatpp::web::server\b|#\s*include\s+["<]oatpp/'), "oatpp"),
+    (re.compile(r'\bhttplib::(?:SSL)?Server\b|#\s*include\s+["<]httplib\.h'), "cpp-httplib"),
+    (re.compile(r'\brestbed::(?:Service|Resource)\b|#\s*include\s+<restbed>'), "restbed"),
     (re.compile(r'#\s*include\s+["<]openssl/'), "openssl"),
     (re.compile(r'#\s*include\s+["<]botan/'), "botan"),
     (re.compile(r'#\s*include\s+["<]sodium\.h'), "libsodium"),
@@ -266,9 +271,9 @@ class CppAnalyzer:
         name="cpp",
         display_name="C++ Analyzer",
         version="0.1.0",
-        description="C++ analyzer covering Crow, Pistache, Drogon, cpprestsdk, libcurl/cpr, OpenSSL/Botan/libsodium/Crypto++, libpqxx/mongocxx/redis-plus-plus.",
+        description="C++ analyzer covering Crow, Pistache, Drogon, cpprestsdk, cpp-httplib, oat++, restbed, libcurl/cpr, OpenSSL/Botan/libsodium/Crypto++, libpqxx/mongocxx/redis-plus-plus.",
         scope="C++ source trees and CMake projects. Detects modern HTTP frameworks and common DB / crypto libraries.",
-        targets=["cpp", "c++", "crow", "pistache", "drogon", "cpprestsdk"],
+        targets=["cpp", "c++", "crow", "pistache", "drogon", "cpprestsdk", "cpp-httplib", "oatpp", "restbed"],
         languages=["cpp"],
         priority=20,
         experimental=True,  # Like the C analyzer; regex coverage of C++ is more leaky than of stricter ecosystems.
@@ -437,6 +442,13 @@ class CppAnalyzer:
             if path_match:
                 path = path_match.group(1) or "/"
                 self._append_unique_route(result, path, "ANY", relative, line_of(content, match.start()))
+
+        # cpp-httplib / oat++ / restbed (AttackMap#191), with Route.auth where
+        # the framework shows a guard.
+        for route in framework_routes(content, relative):
+            key = (route.path, route.method, route.file)
+            if not any((item.path, item.method, item.file) == key for item in result.routes):
+                result.routes.append(route)
 
     def _extract_databases(self, content: str, relative: str, result: ScanResult) -> None:
         for pattern, kind in DB_PATTERNS:

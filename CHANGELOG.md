@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **cpp-httplib, oat++ and restbed routes (mlaify/AttackMap#191).** A new `framework_routes.py` extracts:
+  - cpp-httplib `svr.Get/Post/Put/Patch/Delete/Options` on a declared `httplib::Server`/`SSLServer`. Client calls are excluded and regex paths are kept as written.
+  - oat++ `ENDPOINT`/`ENDPOINT_ASYNC`. An `AUTHORIZATION(...)` parameter sets `Route.auth = "required"`.
+  - restbed `set_path`/`set_paths` on a `Resource`, joined with its `set_method_handler` methods. A resource or service `set_authentication_handler` sets `Route.auth = "required"`.
+
+  Framework hints were added for cpp-httplib and restbed. Validated on cpp-httplib, oat++ example-crud and restbed.
+
+### Added
+
 - `.h` headers are analyzed when the repo is C++ (any C++ source/header or a C++-enabled `CMakeLists.txt`), by the ownership rule shared with attackmap-analyzer-c. `detect()` also claims header-only C++ repos (`.h` + C++ CMake) (mlaify/attackmap-analyzer-c#2).
 - Drogon `METHOD_ADD(Ctrl::fn, "/rel", Get)` routes, prefixed with the controller's `/namespace/Class` path, and `PATH_ADD("/path", ...)` for `HttpSimpleController` (mlaify/attackmap-analyzer-c#2).
 
