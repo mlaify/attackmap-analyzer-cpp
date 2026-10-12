@@ -32,7 +32,7 @@ from pathlib import Path
 
 from attackmap.sdk import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, read_source, rel
 
-from .native_deps import native_dependencies
+from .native_deps import MANIFEST_NAMES, MANIFEST_SUFFIXES, dedupe_dependencies, is_manifest, manifest_records
 from .contracts import (
     AnalyzerMetadata,
     AuthHint,
@@ -318,13 +318,20 @@ class CppAnalyzer:
         cxx_repo = False
         for file_path in iter_repo_files(
             root,
-            suffixes=CODE_SUFFIXES | {_HEADER_SUFFIX},
-            names={"CMakeLists.txt"},
+            suffixes=CODE_SUFFIXES | {_HEADER_SUFFIX} | MANIFEST_SUFFIXES,
+            names={"CMakeLists.txt"} | MANIFEST_NAMES,
             skip_dirs=SKIP_DIRS,
         ):
-            if file_path.name == "CMakeLists.txt":
+            if is_manifest(file_path):
+                # CMake / Conan / vcpkg dependencies and unpinned CMake
+                # downloads (AttackMap#191).
                 text = read_source(file_path)
                 if text is None:
+                    continue
+                dependencies, supply_chain = manifest_records(file_path, text, rel(file_path, root))
+                result.dependencies.extend(dependencies)
+                result.supply_chain_issues.extend(supply_chain)
+                if file_path.name != "CMakeLists.txt":
                     continue
                 project = _project_name_from_cmake(text)
                 if project:
@@ -358,11 +365,7 @@ class CppAnalyzer:
             self._extract_frameworks(content, relative, result)
             self._extract_entrypoints(content, relative, result)
 
-        # CMake / Conan / vcpkg dependencies and unpinned CMake downloads
-        # (AttackMap#191).
-        dependencies, supply_chain = native_dependencies(root, SKIP_DIRS)
-        result.dependencies.extend(dependencies)
-        result.supply_chain_issues.extend(supply_chain)
+        result.dependencies = dedupe_dependencies(result.dependencies)
 
         result.languages.sort()
         return result

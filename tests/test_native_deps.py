@@ -201,3 +201,26 @@ def test_fuzz_never_raises() -> None:
             except (ValueError, TypeError, KeyError, AttributeError):
                 pass  # native_dependencies() skips malformed JSON
     parse_cmake("FetchContent_Declare(" + "(" * 50000, "CMakeLists.txt")
+
+
+# ---------- analyzer integration ----------
+
+
+def test_analyzer_emits_dependencies_and_issues(tmp_path: Path) -> None:
+    from attackmap_analyzer_cpp import CppAnalyzer
+
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    (tmp_path / "CMakeLists.txt").write_text(
+        "project(app)\nfind_package(ZLIB 1.2)\n"
+        "FetchContent_Declare(fmt GIT_REPOSITORY https://github.com/fmtlib/fmt GIT_TAG master)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "vcpkg.json").write_text('{"dependencies": ["zlib"]}', encoding="utf-8")
+    result = CppAnalyzer().analyze(tmp_path)
+    assert sorted((d.ecosystem, d.name, d.version) for d in result.dependencies) == [
+        ("cmake", "ZLIB", ">=1.2"),
+        ("cmake", "fmt", "master"),
+        ("vcpkg", "zlib", ""),
+    ]
+    assert [(i.kind, i.package, i.severity) for i in result.supply_chain_issues] == [("mutable_vcs_dependency", "fmt", "medium")]
+    assert "project:app" in {h.hint for h in result.service_hints}

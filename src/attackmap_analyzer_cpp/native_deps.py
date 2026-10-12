@@ -81,37 +81,52 @@ _PY_STRING_RE = re.compile(r"[\"']([^\"'\n]{1,200})[\"']")
 _DEV_SECTIONS = frozenset({"tool_requires", "build_requires", "test_requires"})
 
 
-def native_dependencies(root: Path, skip_dirs: set[str]) -> tuple[list, list]:
-    """``(DependencyHint list, SupplyChainIssue list)`` for the repo."""
-    if DependencyHint is None or "cmake" not in DEPENDENCY_ECOSYSTEMS:
+MANIFEST_NAMES = frozenset(_MANIFEST_NAMES)
+MANIFEST_SUFFIXES = frozenset({".cmake"})
+
+
+def is_manifest(path: Path) -> bool:
+    """A file ``manifest_records`` understands (for the analyzer's own walk)."""
+    return path.name in MANIFEST_NAMES or path.suffix == ".cmake"
+
+
+def manifest_records(path: Path, text: str, relative: str) -> tuple[list, list]:
+    """``(DependencyHint list, SupplyChainIssue list)`` from one manifest.
+    A malformed manifest yields nothing; it never raises."""
+    if DependencyHint is None or "cmake" not in DEPENDENCY_ECOSYSTEMS or len(text) > _MAX_FILE_CHARS:
         return [], []
+    name = path.name
+    try:
+        if name == "vcpkg.json":
+            return parse_vcpkg_json(text, relative), []
+        if name == "conanfile.txt":
+            return parse_conanfile_txt(text, relative), []
+        if name == "conanfile.py":
+            return parse_conanfile_py(text, relative), []
+        if name == "conan.lock":
+            return parse_conan_lock(text, relative), []
+        if name == "CMakeLists.txt" or path.suffix == ".cmake":
+            return parse_cmake(text, relative)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return [], []
+
+
+def native_dependencies(root: Path, skip_dirs: set[str]) -> tuple[list, list]:
+    """Walk ``root`` and collect every manifest's records (deduped)."""
     deps: list = []
     issues: list = []
-    for path in iter_repo_files(root, suffixes={".cmake"}, names=_MANIFEST_NAMES, skip_dirs=skip_dirs):
+    for path in iter_repo_files(root, suffixes=set(MANIFEST_SUFFIXES), names=set(MANIFEST_NAMES), skip_dirs=skip_dirs):
         text = read_source(path)
-        if text is None or len(text) > _MAX_FILE_CHARS:
+        if text is None:
             continue
-        relative = rel(path, root)
-        name = path.name
-        try:
-            if name == "vcpkg.json":
-                deps.extend(parse_vcpkg_json(text, relative))
-            elif name == "conanfile.txt":
-                deps.extend(parse_conanfile_txt(text, relative))
-            elif name == "conanfile.py":
-                deps.extend(parse_conanfile_py(text, relative))
-            elif name == "conan.lock":
-                deps.extend(parse_conan_lock(text, relative))
-            elif name == "CMakeLists.txt" or path.suffix == ".cmake":
-                found, flagged = parse_cmake(text, relative)
-                deps.extend(found)
-                issues.extend(flagged)
-        except (ValueError, TypeError, KeyError, AttributeError):
-            continue  # malformed manifest: skip it, never fail the scan
-    return _dedupe(deps), issues
+        found, flagged = manifest_records(path, text, rel(path, root))
+        deps.extend(found)
+        issues.extend(flagged)
+    return dedupe_dependencies(deps), issues
 
 
-def _dedupe(deps: list) -> list:
+def dedupe_dependencies(deps: list) -> list:
     seen: set[tuple] = set()
     out = []
     for dep in deps:
@@ -410,5 +425,5 @@ def _cpm_shorthand(spec: str, relative: str, line: int, dev_manifest: bool):
     return dep, _ref_issue(name, ref, repo, relative, line)
 
 
-__all__ = ["native_dependencies", "parse_cmake", "parse_conan_lock", "parse_conanfile_py", "parse_conanfile_txt",
+__all__ = ["dedupe_dependencies", "is_manifest", "manifest_records", "native_dependencies", "parse_cmake", "parse_conan_lock", "parse_conanfile_py", "parse_conanfile_txt",
            "parse_vcpkg_json"]
