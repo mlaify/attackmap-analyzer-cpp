@@ -164,3 +164,57 @@ def test_fuzz_never_raises() -> None:
         text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 80)))
         framework_routes(text, "f.cpp")
     framework_routes('ENDPOINT("GET", "/x", n' + "(" * 50000, "f.cpp")
+
+
+# ---------- review follow-ups ----------
+
+
+def test_commented_out_and_string_routes_are_ignored() -> None:
+    code = (
+        '#include "httplib.h"\nint main() {\n    httplib::Server svr;\n'
+        '    // svr.Get("/old", h);\n    /* svr.Post("/gone", h); */\n'
+        '    puts(R"(svr.Get("/in-a-string", h);)");\n    svr.Get("/live", h);\n}\n'
+    )
+    assert _routes(code) == [("GET", "/live", 7, "unknown")]
+
+
+def test_commented_out_auth_does_not_count() -> None:
+    oatpp = (
+        '  ENDPOINT("GET", "/x", x\n'
+        "           /* , AUTHORIZATION(std::shared_ptr<Auth>, auth) */) {\n    return r;\n  }\n"
+    )
+    assert _routes(oatpp) == [("GET", "/x", 1, "unknown")]
+    restbed = RESTBED + "    // service.set_authentication_handler( auth );\n}\n"
+    assert {a for _, _, _, a in _routes(restbed)} == {"unknown"}
+
+
+def test_handler_on_a_non_literal_path_resource_is_not_service_wide() -> None:
+    code = RESTBED + (
+        "    auto admin = make_shared< Resource >( );\n    admin->set_path( admin_path );\n"
+        "    admin->set_authentication_handler( auth );\n}\n"
+    )
+    assert {a for _, _, _, a in _routes(code)} == {"unknown"}
+
+
+def test_handler_on_an_unknown_receiver_is_ambiguous() -> None:
+    code = RESTBED + "    settings->set_authentication_handler( auth );\n}\n"
+    assert {a for _, _, _, a in _routes(code)} == {"unknown"}
+
+
+def test_make_unique_servers() -> None:
+    code = (
+        '#include <httplib.h>\nint main() {\n'
+        "    auto svr = std::make_unique<httplib::Server>();\n"
+        "    std::shared_ptr<httplib::SSLServer> tls = std::make_shared<httplib::SSLServer>(cert, key);\n"
+        '    svr->Get("/a", h);\n    tls->Post("/b", h);\n}\n'
+    )
+    assert [(m, p) for m, p, _, _ in _routes(code)] == [("GET", "/a"), ("POST", "/b")]
+
+
+def test_masking_is_linear() -> None:
+    import time
+
+    start = time.perf_counter()
+    for text in ('R"x(' * 30000, "/*" * 50000, '"' + "\\" * 60000, "httplib " + "svr.Get(" * 20000):
+        framework_routes(text, "f.cpp")
+    assert time.perf_counter() - start < 3
