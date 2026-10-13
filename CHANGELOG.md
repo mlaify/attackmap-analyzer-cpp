@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `alloc_size_overflow`: unchecked `malloc(n * size)` / `new T[n * m]`.
 
   Sources are traced inside each function or lambda: request parameters of cpp-httplib, Crow, Drogon, Pistache, Boost.Beast, restbed and oat++ `ENDPOINT` handlers, the C framework accessors, socket reads, `std::cin`, argv, getenv and file reads. Severity and confidence follow the source: remote input high, local input medium, untraced low. Example code is capped at low and test/fuzz code is skipped. Requires an AttackMap core that exports `CodeWeakness` (mlaify/AttackMap#333).
+- **cpp-httplib, oat++ and restbed routes (mlaify/AttackMap#191).** A new `framework_routes.py` extracts:
+  - cpp-httplib `svr.Get/Post/Put/Patch/Delete/Options` on a declared `httplib::Server`/`SSLServer`. Client calls are excluded and regex paths are kept as written.
+  - oat++ `ENDPOINT`/`ENDPOINT_ASYNC`. An `AUTHORIZATION(...)` parameter sets `Route.auth = "required"`.
+  - restbed `set_path`/`set_paths` on a `Resource`, joined with its `set_method_handler` methods. A resource or service `set_authentication_handler` sets `Route.auth = "required"`.
+
+  Framework hints were added for cpp-httplib and restbed. Validated on cpp-httplib, oat++ example-crud and restbed.
 
 ### Added
 
