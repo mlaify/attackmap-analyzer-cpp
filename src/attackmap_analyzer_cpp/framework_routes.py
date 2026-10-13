@@ -24,7 +24,7 @@ import re
 
 from attackmap.sdk import line_of
 
-from .contracts import Route
+from attackmap.sdk import Route
 
 _MAX_ARGS_SPAN = 2000
 
