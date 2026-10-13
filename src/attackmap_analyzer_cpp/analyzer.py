@@ -19,6 +19,10 @@ Coverage (v0.1):
 - Service hints: project name from CMakeLists.txt project() declaration
 - Dependencies (AttackMap#191): CMake FetchContent / ExternalProject / CPM /
   find_package, Conan and vcpkg manifests (see ``native_deps``)
+- Native sinks (AttackMap#189): unbounded copies, non-constant formats,
+  command execution, input-controlled copy lengths and allocation-size
+  overflows, emitted as ``CodeWeakness`` records (see ``native_sinks``,
+  shared verbatim with attackmap-analyzer-c)
 
 C++ shares much of its data-plane vocabulary with C (libcurl, OpenSSL,
 libsodium) — those patterns are duplicated here so a pure-C++ project
@@ -36,6 +40,7 @@ from attackmap.sdk import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, read_sour
 
 from .framework_routes import framework_routes
 from .native_deps import MANIFEST_NAMES, MANIFEST_SUFFIXES, dedupe_dependencies, is_manifest, manifest_records
+from .native_sinks import find_native_weaknesses
 from .contracts import (
     AnalyzerMetadata,
     AuthHint,
@@ -274,8 +279,8 @@ class CppAnalyzer:
         name="cpp",
         display_name="C++ Analyzer",
         version="0.1.0",
-        description="C++ analyzer covering Crow, Pistache, Drogon, cpprestsdk, cpp-httplib, oat++, restbed, libcurl/cpr, OpenSSL/Botan/libsodium/Crypto++, libpqxx/mongocxx/redis-plus-plus.",
-        scope="C++ source trees and CMake projects. Detects modern HTTP frameworks and common DB / crypto libraries.",
+        description="C++ analyzer covering Crow, Pistache, Drogon, cpprestsdk, cpp-httplib, oat++, restbed, libcurl/cpr, OpenSSL/Botan/libsodium/Crypto++, libpqxx/mongocxx/redis-plus-plus, plus memory-safety and command-exec sinks.",
+        scope="C++ source trees and CMake projects. Detects modern HTTP frameworks, common DB / crypto libraries, and function-local memory-safety / format-string / command-exec sinks tied to request and input sources.",
         targets=["cpp", "c++", "crow", "pistache", "drogon", "cpprestsdk", "cpp-httplib", "oatpp", "restbed"],
         languages=["cpp"],
         priority=20,
@@ -369,6 +374,7 @@ class CppAnalyzer:
             self._extract_external_calls(content, relative, result)
             self._extract_frameworks(content, relative, result)
             self._extract_entrypoints(content, relative, result)
+            result.code_weaknesses.extend(find_native_weaknesses(content, relative))
 
         result.dependencies = dedupe_dependencies(result.dependencies)
 

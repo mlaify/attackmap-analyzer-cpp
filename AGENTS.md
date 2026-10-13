@@ -23,6 +23,7 @@ C++ ecosystem coverage:
 - **Auth/crypto**: OpenSSL (TLS / EVP / RAND), Botan (TLS / KDF / cipher), libsodium (`crypto_pwhash` → argon2; AEAD), Crypto++ (AES / SHA / Argon2 / HMAC), JWT C++ libs (`jwt::create`, `jwt::decode`)
 - **Secrets**: `std::getenv` / `getenv` with secret-shaped names
 - **Dependencies** (`native_deps.py`, mirrored verbatim in attackmap-analyzer-c): vcpkg, Conan and CMake manifests → `DependencyHint` (`vcpkg`/`conan`/`cmake`), unpinned CMake downloads → `SupplyChainIssue` `mutable_vcs_dependency` (AttackMap#191). Manifests are parsed as text; `conanfile.py` is never executed.
+- **Native sinks** (`native_sinks.py`): unbounded copies, non-constant formats, command execution, input-controlled copy lengths and allocation-size overflows, emitted as `CodeWeakness` records with per-instance severity/confidence (AttackMap#189)
 
 ## Out of scope (for now)
 - Wt framework — too narrow.
@@ -41,6 +42,15 @@ Like the C analyzer, this one is marked `experimental=True`:
 - Canonical TLS / cipher / JWT C++ API hits (`SSL_CTX_new`, `EVP_*`, `Botan::TLS::Server`, `jwt::create`, `CryptoPP::AES`) → 0.85
 - Generic OpenSSL EVP / RAND → 0.8
 - Keyword sweeps (`Authorization`, `Bearer`, `api_key`) → 0.6
+
+## Native sinks (`native_sinks.py`)
+- Function-local: a sink is judged only against sources traced in its enclosing function or lambda, in textual order. A reassignment to a literal clears taint. It doesn't flow through unknown free-function calls. Only upper-bound checks against a non-trivial bound count as guards (`n < 0`, `strlen(s) > 0` don't).
+- Linear work: one masking pass, one pass per pattern over the file with each match filed under its innermost function/lambda, and precomputed per-function bound/clamp indices. `test_*_linear` / `test_nested_lambdas_are_not_rescanned` guard it.
+- Precision over recall. An untraced `strcpy`/`memcpy`/`malloc` is never reported. Only a non-constant format or command is reported without a traced source, and then at low.
+- Severity/confidence: request or network input → high/high, local input (stdin, argv, env, file) → medium/medium, untraced → low/low. Example/demo/contrib paths are capped at low. Test/fuzz/bench paths are skipped unless `ATTACKMAP_INCLUDE_TESTS` is set.
+- The module is **mirrored verbatim** from attackmap-analyzer-c, together with `tests/test_native_sinks.py`; C++-only cases live in `tests/test_native_sinks_cpp.py`. Change both together.
+- All scanners are bounded (`_MAX_*` constants) and patterns are module-level and linear. `test_fuzz_never_raises` and `test_pathological_input_is_fast` guard that.
+- Every new sink, source or guard needs a positive and a negative test, and a real-repo validation run (civetweb, mongoose, cpp-httplib, drogon, Crow, restbed, oat++ example-crud). Put the hand-checked numbers in the PR.
 
 ## C-vs-C++ disambiguation
 `.hpp`, `.hxx`, `.ipp`, `.tpp` are always C++. `.h` ownership is decided per repo, by the same rule in both the C and C++ analyzers, so exactly one of them analyzes each header whichever of `-m c` / `-m cpp` is selected:

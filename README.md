@@ -19,6 +19,7 @@ This analyzer extracts structured signals from C++ source trees (`.cpp`, `.cc`, 
 - **Secrets** — `std::getenv`, `getenv` with secret-shaped names
 - **Service hints** — project name from `CMakeLists.txt` `project(NAME ...)` declaration
 - **Dependencies (SBOM)** — vcpkg (`vcpkg.json`), Conan (`conanfile.txt`, `conanfile.py`, `conan.lock`) and CMake (`FetchContent_Declare`, `ExternalProject_Add`, `CPMAddPackage`, `find_package`), so `--cve` reaches native dependencies; unpinned CMake downloads are reported as supply-chain issues (see [Dependencies](#dependencies))
+- **Memory-safety and command-exec sinks** — unbounded copies, non-constant printf formats, `system`/`popen`/`exec*`, input-controlled `memcpy` lengths and allocation-size overflows, tied to request and input sources in the same function (see [Native sinks](#native-sinks))
 
 All emissions populate AttackMap's Signal v2 fields (line numbers + evidence snippets + confidence) so downstream insights can cite `path/to/file.cpp:NN`.
 
@@ -89,6 +90,38 @@ Values that are CMake variables (`${X}`) are never flagged. Comments, quoted str
 - **cpprestsdk listener routes**: only the path component of the listener's URL is extracted as a Route. Per-method handlers (`listener.support(methods::GET, ...)`) are not separately emitted — that would require tracking the listener's lifetime.
 - **C++ shares vocabulary with C** (libcurl, OpenSSL, libsodium). Those patterns are duplicated here so a pure-C++ project without the C analyzer installed still gets full coverage. AttackMap's overlay deduplication handles double-firing.
 - **Pure-template / header-only ORM** (sqlite_orm, sqlpp11): only basic detection via headers and `make_storage`; column-level extraction is out of scope.
+
+## Native sinks
+
+The analyzer emits function-local C/C++ weaknesses as `CodeWeakness` records (mlaify/AttackMap#189). Core turns them into findings, one per severity tier, with CWE/OWASP/ASVS ids.
+
+| Kind (rule id) | Fires on | Not reported |
+|---|---|---|
+| `unbounded_copy` (CWE-120) | `gets`; `scanf`/`fscanf` `%s`/`%[` without a width; `strcpy`/`strcat`/`sprintf` `%s` whose source is traced to an input | a literal or untraced source; a source with an upper-bound check first (`strlen(s) < sizeof dst`, directly or through a length alias; `> 0` / `< 0` checks don't count); a sized destination (`malloc(strlen(s) + 1)`); `%.Ns`; a bounded read (`fgets`, `recv`, `%255s`) copied into an array at least as large |
+| `format_string` (CWE-134) | a printf-family format (`printf`, `fprintf`, `sprintf`, `snprintf`, `syslog`, civetweb/mongoose `mg_printf`, `mg_http_reply`) that is not a constant | literals, `#define` and `static const` strings, literal ternaries, gettext `_()`, variadic and `va_list` wrappers forwarding their own `fmt`, untraced function results |
+| `native_command_exec` (CWE-78) | `system`/`popen` with a non-constant command; `exec*` with an input-derived argument or a non-constant `sh -c` line | constant commands, `NULL`, an untraced `execv(path, args)` without a shell |
+| `tainted_copy_length` (CWE-805) | `memcpy`/`memmove`/`strncpy`/`strncat` length traced to an input | lengths with an upper-bound check (`n > sizeof dst`, `ck_assert_int_lt(n, cap)`) or a clamp (`MIN`, `n > cap ? cap : n`, also inside the call) first, a destination allocated from the same length, a byte count returned by `recv`/`read` |
+| `alloc_size_overflow` (CWE-680) | `malloc`/`realloc`/`alloca`/`new T[]` of a product with an input-derived factor | `calloc`, sums, untraced factors, a factor with an upper-bound check first or a `SIZE_MAX`/`__builtin_mul_overflow` guard |
+
+**Sources**, traced per function through assignments, out-parameters and copy functions:
+
+- **Request input:** parameters of a framework request type (bare names such as `Request`, `Rest::Request`, `request<...>`, `shared_ptr<Session>` count only in a file that uses that framework; `struct Request` never does) (cpp-httplib `Request`, Crow `crow::request`, Drogon `HttpRequestPtr`, Pistache `Rest::Request`, Boost.Beast `http::request<...>`, restbed `shared_ptr<Session>`/`shared_ptr<const Request>`); oat++ `ENDPOINT` `QUERY`/`PATH`/`HEADER`/`BODY_*` parameters; accessors such as `get_param_value` and `url_params` (other getters count only on a request-typed variable); and the C framework sources (civetweb, mongoose, libmicrohttpd).
+- **Network input:** `recv`/`recvfrom`/`SSL_read`/`BIO_read`/`mbedtls_ssl_read`, and `read` on a socket-named descriptor.
+- **Local input:** stdin (`fgets(..., stdin)`, `scanf`, `std::cin >>`, `std::getline(std::cin, ...)`), `argv`/`optarg` in a function that takes `argv`, `getenv`, and file reads.
+
+Taint doesn't flow through calls to unknown functions (`gethostbyname(argv[1])`). A reassignment to a literal (`u = "default"`) clears it. A copy between two declared arrays where the destination is at least as large isn't reported.
+
+**Severity and confidence:**
+
+| Input traced to the sink | Severity / confidence |
+|---|---|
+| request or network | high / high |
+| stdin, argv, env or file | medium / medium |
+| none (only non-constant formats and commands are reported) | low / low |
+
+Code under `examples/`, `demo/`, `samples/`, `contrib/` or `docs/` is capped at low. Test, fuzz and benchmark code (`test/`, `tests/`, `unittest/`, `fuzztest/`, `*_test.c`, ...) is skipped. `ATTACKMAP_INCLUDE_TESTS=1` scans it.
+
+`native_sinks.py` is shared verbatim with attackmap-analyzer-c. Each file is analyzed by one of the two plugins (see `.h` ownership), so a weakness is never reported twice. It needs an `attackmap` core that exports `CodeWeakness` from `attackmap.sdk`. With an older core the analyzer still loads and emits no weaknesses.
 
 ## License
 
