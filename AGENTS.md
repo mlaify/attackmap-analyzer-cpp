@@ -17,17 +17,17 @@ This analyzer should:
 ## Scope
 C++ ecosystem coverage:
 
-- **Web frameworks**: Crow (`CROW_ROUTE` + `.methods()` chain), Pistache (`Routes::Get/Post/...`), Drogon (`registerHandler`, `ADD_METHOD_TO`, `METHOD_ADD` with `/namespace/Class` prefix, `PATH_ADD`), cpprestsdk (`http_listener` URL extraction)
+- **Web frameworks**: Crow (`CROW_ROUTE` + `.methods()` chain), Pistache (`Routes::Get/Post/...`), Drogon (`registerHandler`, `ADD_METHOD_TO`, `METHOD_ADD` with `/namespace/Class` prefix, `PATH_ADD`), cpprestsdk (`http_listener` URL extraction), cpp-httplib (`svr.Get/Post/...` on a declared `Server`), oat++ (`ENDPOINT` + `AUTHORIZATION` → `Route.auth`), restbed (`set_path`/`set_paths` + `set_method_handler`, `set_authentication_handler` → `Route.auth`)
 - **HTTP clients**: libcurl, cpr, cpprestsdk client
 - **Databases**: libpqxx, MySQL X DevAPI, mongocxx, redis-plus-plus, SOCI, sqlite_orm
 - **Auth/crypto**: OpenSSL (TLS / EVP / RAND), Botan (TLS / KDF / cipher), libsodium (`crypto_pwhash` → argon2; AEAD), Crypto++ (AES / SHA / Argon2 / HMAC), JWT C++ libs (`jwt::create`, `jwt::decode`)
 - **Secrets**: `std::getenv` / `getenv` with secret-shaped names
 
 ## Out of scope (for now)
-- Boost.Beast / Asio raw HTTP server detection — too low-level; would need flow analysis.
 - Wt framework — too narrow.
 - POCO Net per-route handler factory chains.
-- oatpp `OATPP_API` macros — complex; only framework presence detected.
+- Boost.Beast target dispatch (`req.target() == "/x"`). It needs a real Beast application in the validation corpus before it ships (AttackMap#191).
+- oat++ / restbed router-level prefixes (`addController` prefix, `set_root`).
 - Per-method handler extraction inside cpprestsdk `listener.support(method, lambda)` — only the listener URL is emitted as a Route.
 
 ## Marked experimental
