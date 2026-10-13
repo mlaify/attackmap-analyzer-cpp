@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CMake: `FetchContent_Declare`, `ExternalProject_Add`, `CPMAddPackage` and `find_package`.
 
   `--cve` now reaches Conan and vcpkg dependencies. CMake ones are inventory-only. Git downloads on a branch or with no `GIT_TAG`, and archive URLs without `URL_HASH`, are reported as `mutable_vcs_dependency` supply-chain issues. Requires an AttackMap core with the `cmake` ecosystem and `SupplyChainIssue` in `attackmap.sdk` (mlaify/AttackMap#333).
+- **cpp-httplib, oat++ and restbed routes (mlaify/AttackMap#191).** A new `framework_routes.py` extracts:
+  - cpp-httplib `svr.Get/Post/Put/Patch/Delete/Options` on a declared `httplib::Server`/`SSLServer`. Client calls are excluded and regex paths are kept as written.
+  - oat++ `ENDPOINT`/`ENDPOINT_ASYNC`. An `AUTHORIZATION(...)` parameter sets `Route.auth = "required"`.
+  - restbed `set_path`/`set_paths` on a `Resource`, joined with its `set_method_handler` methods. A resource or service `set_authentication_handler` sets `Route.auth = "required"`.
+
+  Framework hints were added for cpp-httplib and restbed. Validated on cpp-httplib, oat++ example-crud and restbed.
 
 ### Added
 
