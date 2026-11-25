@@ -283,7 +283,7 @@ class CppAnalyzer:
     metadata = AnalyzerMetadata(
         name="cpp",
         display_name="C++ Analyzer",
-        version=plugin_version("attackmap-analyzer-cpp", default="0.2.1"),
+        version=plugin_version("attackmap-analyzer-cpp", default="0.3.0"),
         requires_core=">=0.8,<2",
         description="C++ analyzer covering Crow, Pistache, Drogon, cpprestsdk, cpp-httplib, oat++, restbed, libcurl/cpr, OpenSSL/Botan/libsodium/Crypto++, libpqxx/mongocxx/redis-plus-plus, plus memory-safety and command-exec sinks.",
         scope="C++ source trees and CMake projects. Detects modern HTTP frameworks, common DB / crypto libraries, and function-local memory-safety / format-string / command-exec sinks tied to request and input sources.",
